@@ -58,6 +58,7 @@ import typebotListener from "../TypebotServices/typebotListener";
 import ShowWhatsAppService from "../WhatsappService/ShowWhatsAppService";
 import { provider } from "./providers";
 import SendWhatsAppMessage from "./SendWhatsAppMessage";
+import { getMessageOptions } from "./SendWhatsAppMedia";
 
 const request = require("request");
 
@@ -91,6 +92,44 @@ interface IMessage {
 export const isNumeric = (value: string) => /^-?\d+$/.test(value);
 
 const writeFileAsync = promisify(writeFile);
+
+const multVecardGet = function (param: any) {
+  let output = " "
+
+  let name = param.split("\n")[2].replace(";;;", "\n").replace('N:', "").replace(";", "").replace(";", " ").replace(";;", " ").replace("\n", "")
+  let inicio = param.split("\n")[4].indexOf('=')
+  let fim = param.split("\n")[4].indexOf(':')
+  let contact = param.split("\n")[4].substring(inicio + 1, fim).replace(";", "")
+  let contactSemWhats = param.split("\n")[4].replace("item1.TEL:", "")
+
+  if (contact != "item1.TEL") {
+    output = output + name + ": 📞" + contact + "" + "\n"
+  } else
+    output = output + name + ": 📞" + contactSemWhats + "" + "\n"
+  return output
+}
+
+const contactsArrayMessageGet = (msg: any,) => {
+  let contactsArray = msg.message?.contactsArrayMessage?.contacts
+  let vcardMulti = contactsArray.map(function (item, indice) {
+    return item.vcard;
+  });
+
+  let bodymessage = ``
+  vcardMulti.forEach(function (vcard, indice) {
+    bodymessage += vcard + "\n\n" + ""
+  })
+
+  let contacts = bodymessage.split("BEGIN:")
+
+  contacts.shift()
+  let finalContacts = ""
+  for (let contact of contacts) {
+    finalContacts = finalContacts + multVecardGet(contact)
+  }
+
+  return finalContacts
+}
 
 const getTypeMessage = (msg: proto.IWebMessageInfo): string => {
   return getContentType(msg.message);
@@ -340,7 +379,7 @@ export const getBodyMessage = (msg: proto.IWebMessageInfo): string | null => {
       viewOnceMessage: getBodyButton(msg) || msg.message?.listResponseMessage?.singleSelectReply?.selectedRowId,
       stickerMessage: "sticker",
       contactMessage: msg.message?.contactMessage?.vcard,
-      contactsArrayMessage: "varios contatos",
+      contactsArrayMessage: (msg.message?.contactsArrayMessage?.contacts) && contactsArrayMessageGet(msg),
       //locationMessage: `Latitude: ${msg.message.locationMessage?.degreesLatitude} - Longitude: ${msg.message.locationMessage?.degreesLongitude}`,
       locationMessage: msgLocation(
         msg.message?.locationMessage?.jpegThumbnail,
@@ -1061,6 +1100,7 @@ const verifyQueue = async (
     if (firstQueue?.options) {
       chatbot = firstQueue.options.length > 0;
     }
+	
 
     //inicia integração dialogflow/n8n
     if (
@@ -1135,16 +1175,21 @@ const verifyQueue = async (
     };
     let lastMsg = map_msg.get(contact.number)
     let invalidOption = "Opção inválida, por favor, escolha uma opção válida."
+    
 
     // console.log('getBodyMessage(msg)', getBodyMessage(msg))
     console.log('textMessage2', textMessage)
+     console.log("lastMsg::::::::::::':", contact.number)
     // map_msg.set(contact.number, lastMsg);
-    if (!lastMsg?.msg || getBodyMessage(msg).includes('#') || lastMsg.msg !== textMessage.text && !lastMsg.invalid_option) {
+    if (!lastMsg?.msg || getBodyMessage(msg).includes('#') || textMessage.text === 'concluido' || lastMsg.msg !== textMessage.text && !lastMsg.invalid_option) {
       const sendMsg = await wbot.sendMessage(
         `${contact.number}@${ticket.isGroup ? "g.us" : "s.whatsapp.net"}`,
         textMessage
       );
-      map_msg.set(contact.number, { msg: textMessage.text, invalid_option: false });
+      lastMsg ?? (lastMsg = {});
+      lastMsg.msg = textMessage.text;
+      lastMsg.invalid_option = false;
+      map_msg.set(contact.number, lastMsg);
       await verifyMessage(sendMsg, ticket, ticket.contact);
 
     } else if (lastMsg.msg !== invalidOption && !lastMsg.invalid_option) {
@@ -1153,7 +1198,10 @@ const verifyQueue = async (
         `${contact.number}@${ticket.isGroup ? "g.us" : "s.whatsapp.net"}`,
         textMessage
       );
-      map_msg.set(contact.number, { msg: textMessage.text, invalid_option: true });
+      lastMsg ?? (lastMsg = {});
+      lastMsg.invalid_option = true;
+      lastMsg.msg = textMessage.text;
+      map_msg.set(contact.number, lastMsg);
       await verifyMessage(sendMsg, ticket, ticket.contact);
     }
 
@@ -1250,6 +1298,15 @@ const verifyQueue = async (
         }
         );
         await verifyMessage(sentMessage, ticket, contact);
+      }
+	        if (choosenQueue.mediaPath !== null && choosenQueue.mediaPath !== "") {
+        const filePath = path.resolve("public", choosenQueue.mediaPath);
+
+        const optionsMsg = await getMessageOptions(choosenQueue.mediaName, filePath);
+
+        let sentMessage = await wbot.sendMessage(`${ticket.contact.number}@${ticket.isGroup ? "g.us" : "s.whatsapp.net"}`, { ...optionsMsg });
+
+        await verifyMediaMessage(sentMessage, ticket, contact);
       }
     }
 
@@ -1562,6 +1619,39 @@ const handleChartbot = async (ticket: Ticket, msg: WAMessage, wbot: Session, don
         ["createdAt", "ASC"],
       ],
     });
+	
+	if (queueOptions.length === 0) {
+	const textMessage = {
+	  text: formatBody(`\u200e${currentOption.message}`, ticket.contact),
+	};
+
+	const sendMsg = await wbot.sendMessage(
+	  `${ticket.contact.number}@${ticket.isGroup ? "g.us" : "s.whatsapp.net"}`,
+	  textMessage
+	);
+	
+	await verifyMessage(sendMsg, ticket, ticket.contact);
+		        if (currentOption.mediaPath !== null && currentOption.mediaPath !== "")  {
+
+          const filePath = path.resolve("public", currentOption.mediaPath);
+
+
+          const optionsMsg = await getMessageOptions(currentOption.mediaName, filePath);
+
+          let sentMessage = await wbot.sendMessage(`${ticket.contact.number}@${ticket.isGroup ? "g.us" : "s.whatsapp.net"}`, { ...optionsMsg });
+
+          await verifyMediaMessage(sentMessage, ticket, ticket.contact);
+        }
+
+	await verifyMessage(sendMsg, ticket, ticket.contact);
+	
+	await ticket.update({
+	  queueOptionId: null,
+	  chatbot: false,
+	});
+	//console.log("Fim do chatbot. Última opção alcançada.");
+	return;
+  }
 
     if (queueOptions.length > -1) {
 
@@ -1655,6 +1745,17 @@ const handleChartbot = async (ticket: Ticket, msg: WAMessage, wbot: Session, don
         );
 
         await verifyMessage(sendMsg, ticket, ticket.contact);
+		        if (currentOption.mediaPath !== null && currentOption.mediaPath !== "")  {
+
+          const filePath = path.resolve("public", currentOption.mediaPath);
+
+
+          const optionsMsg = await getMessageOptions(currentOption.mediaName, filePath);
+
+          let sentMessage = await wbot.sendMessage(`${ticket.contact.number}@${ticket.isGroup ? "g.us" : "s.whatsapp.net"}`, { ...optionsMsg });
+
+          await verifyMediaMessage(sentMessage, ticket, ticket.contact);
+        }
       };
 
       if (buttonActive.value === "list") {
